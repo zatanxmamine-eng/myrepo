@@ -2,14 +2,14 @@
 import streamlit as st
 
 ANALYSES = [
-    ("savi",       "🌱 SAVI/NDWI สรุปภาพรวม",        30, True),
-    ("growth",     "🚀 Growth Speed",                  45, True),
-    ("delta_ndvi", "🔄 Delta NDVI",                    60, True),
-    ("classify",   "🗺️ Classification 4 ระดับ",        45, True),
-    ("chirps",     "🌧️ CHIRPS Rainfall รายสัปดาห์",    40, True),
-    ("ndre",       "🍃 NDRE (Red Edge)",               30, True),
+    ("savi",       "🌱 SAVI/NDWI สรุปภาพรวม",        2, True),
+    ("growth",     "🚀 Growth Speed",                  1, True),
+    ("delta_ndvi", "🔄 Delta NDVI",                    2, True),
+    ("classify",   "🗺️ Classification 4 ระดับ",        1, True),
+    ("chirps",     "🌧️ CHIRPS Rainfall รายสัปดาห์",    2, True),
+    ("ndre",       "🍃 NDRE (Red Edge)",               0, True),
     ("ay_compare", "📊 SAVI vs ผลผลิตจริง (AY)",        0, False),
-    ("year_comp",  "📅 เปรียบข้ามปี",                  90, True),
+    ("year_comp",  "📅 เปรียบข้ามปี",                  3, True),
     ("crop_comp",  "🌾 เปรียบตามประเภทอ้อย",            0, False),
     ("alerts",     "🚨 แจ้งเตือนแปลงเสี่ยง",            0, False),
 ]
@@ -25,7 +25,7 @@ def render_step2():
             checked = st.checkbox(label, value=default, key=f"ana_{key}")
             if checked:
                 selected.append(key)
-                tag = f"⏱ ~{secs} วิ/แปลง" if secs > 0 else "⚡ เร็ว (local)"
+                tag = f"⏱ ~{secs} วิ/แปลง (batch)" if secs > 0 else "⚡ เร็ว (local)"
                 gee_tag = "🛰 GEE" if needs_gee else "📊 local"
                 st.caption(f"  {tag} · {gee_tag}")
         st.session_state.analyses = selected
