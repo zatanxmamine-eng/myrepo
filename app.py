@@ -4,6 +4,7 @@ from gee_utils import load_geojson, init_gee
 from ui_step1 import render_step1
 from ui_step2 import render_step2
 from ui_step3 import render_step3
+from ui_upload import render_upload_sidebar
 
 st.set_page_config(page_title="🌾 GEE Sugarcane Analyzer", layout="wide")
 
@@ -13,7 +14,7 @@ def setup_gee():
     return True
 
 setup_gee()
-geojson_data = load_geojson()
+geojson_data = render_upload_sidebar()
 
 for key, val in [
     ("step", 1),

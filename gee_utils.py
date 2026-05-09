@@ -13,6 +13,44 @@ def load_geojson():
     with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
+def detect_columns(geojson_data):
+    """Auto-detect standard column roles from GeoJSON properties."""
+    if not geojson_data.get("features"):
+        return {}
+    cols = list(geojson_data["features"][0]["properties"].keys())
+    low  = {c.lower(): c for c in cols}
+
+    def find(keywords):
+        for kw in keywords:
+            for lc, orig in low.items():
+                if kw in lc:
+                    return orig
+        return None
+
+    return {
+        "all_cols":     cols,
+        "FIELD_CODE":   find(["field_code", "fieldcode", "field_id", "parcel_id", "plot_id"]),
+        "AREA_RAI":     find(["area_rai", "area", "rai", "size"]),
+        "PD_cols":      [c for c in cols if c.startswith("PD_")],
+        "CT_cols":      [c for c in cols if c.startswith("CT_")],
+        "Variety_cols": [c for c in cols if c.startswith("Variety_")],
+    }
+
+
+def normalize_geojson(geojson_data, col_map):
+    """Rename properties in all features per col_map {old_name: new_name}."""
+    if not col_map:
+        return geojson_data
+    import copy
+    result = copy.deepcopy(geojson_data)
+    for f in result["features"]:
+        props = f["properties"]
+        for old, new in col_map.items():
+            if old in props and old != new:
+                props[new] = props.pop(old)
+    return result
+
 def init_gee(project="sugarcane-495504"):
     try:
         # Streamlit Cloud: write credentials from secrets
