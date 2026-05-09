@@ -4,7 +4,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import shape
-from gee_utils import run_batch_all
+from gee_utils import build_date_groups, run_group
 
 RESULT_TABS = [
     "🗺️ แผนที่รวม", "🌱 SAVI/NDWI", "🚀 Growth Speed",
@@ -14,24 +14,60 @@ RESULT_TABS = [
 ]
 
 
+# Weight per analysis type (calibrated: 30 parcels all analyses ≈ 200 sec)
+_ANALYSIS_WEIGHTS = {"savi": 1.5, "ndre": 0, "growth": 1.0, "delta_ndvi": 2.5, "chirps": 1.8}
+
+def _estimate_sec(n_parcels, analyses):
+    w = sum(_ANALYSIS_WEIGHTS.get(a, 0) for a in analyses) or 1
+    return max(20, int(n_parcels * w))
+
+def _fmt_time(sec):
+    m, s = divmod(int(sec), 60)
+    return f"{m} นาที {s} วินาที" if m else f"{s} วินาที"
+
+
 def run_analysis(geojson_data):
-    """Run GEE batch analysis for all selected parcels."""
+    """Run GEE batch analysis grouped by planting date, with per-group progress."""
+    import time
     fields   = st.session_state.selected_fields
     year     = st.session_state.target_year
     analyses = st.session_state.analyses
 
-    progress   = st.progress(0, text="กำลังส่งข้อมูลไป GEE...")
+    date_groups, no_date, props_map, feat_lookup = build_date_groups(geojson_data, fields, year)
+    n_groups = len(date_groups)
+    est      = _estimate_sec(len(fields), analyses)
+
     status_box = st.empty()
-    status_box.info(f"🛰 ส่ง {len(fields)} แปลงไป GEE พร้อมกัน (batch mode)...")
+    progress   = st.progress(0)
+    status_box.info(f"🛰 {len(fields)} แปลง · {n_groups} กลุ่มวันปลูก · ประมาณ {_fmt_time(est)}")
 
-    try:
-        results = run_batch_all(geojson_data, fields, year, analyses)
-        progress.progress(1.0, text="เสร็จแล้ว")
-        status_box.success(f"✅ วิเคราะห์เสร็จ {len(results)} แปลง")
-    except Exception as e:
-        status_box.error(f"❌ Error: {e}")
-        results = {fc: {"FIELD_CODE": fc, "STATUS": f"Error: {e}"} for fc in fields}
+    ct_col  = f"CT_{year.replace('-', '_')}"
+    results = {}
 
+    for fc in no_date:
+        p = props_map.get(fc, {})
+        results[fc] = {"FIELD_CODE": fc, "AREA_RAI": p.get("AREA_RAI"),
+                       "CROP_TYPE": p.get(ct_col), "START_DATE": None,
+                       "YEAR": year, "STATUS": "ไม่มีวันปลูก"}
+
+    t0 = time.time()
+    for i, (start_str, codes) in enumerate(date_groups.items()):
+        elapsed = time.time() - t0
+        remaining = max(0, est - elapsed)
+        status_box.info(
+            f"🛰 กลุ่มที่ {i+1}/{n_groups} · "
+            f"ผ่านมา {_fmt_time(elapsed)} · "
+            f"เหลือประมาณ {_fmt_time(remaining)}"
+        )
+        try:
+            results.update(run_group(feat_lookup, props_map, codes, start_str, year, analyses))
+        except Exception as e:
+            for fc in codes:
+                results[fc] = {"FIELD_CODE": fc, "STATUS": f"Error: {e}"}
+        progress.progress((i + 1) / n_groups)
+
+    elapsed = time.time() - t0
+    status_box.success(f"✅ เสร็จ {len(results)} แปลง · ใช้เวลา {_fmt_time(elapsed)}")
     return results
 
 
