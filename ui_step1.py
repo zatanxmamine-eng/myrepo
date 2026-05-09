@@ -51,9 +51,18 @@ def render_step1(geojson_data):
     # ── Selected list ──
     with right:
         st.markdown(f"**เลือกแล้ว ({len(st.session_state.selected_fields)})**")
-        if st.button("ล้างทั้งหมด", use_container_width=True):
-            st.session_state.selected_fields = []
-            st.rerun()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ ทั้งหมด", use_container_width=True):
+                existing = set(st.session_state.selected_fields)
+                for code in filtered_codes:
+                    if code not in existing:
+                        st.session_state.selected_fields.append(code)
+                st.rerun()
+        with c2:
+            if st.button("ล้าง", use_container_width=True):
+                st.session_state.selected_fields = []
+                st.rerun()
 
         ct_col = f"CT_{year.replace('-', '_')}"
         props_map = {f["properties"]["FIELD_CODE"]: f["properties"] for f in geojson_data["features"]}
