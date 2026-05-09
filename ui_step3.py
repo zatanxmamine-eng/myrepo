@@ -62,7 +62,7 @@ def _render_nav(df):
             st.rerun()
 
     st.divider()
-    csv = df.to_csv(index=False, encoding="utf-8-sig")
+    csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 Export CSV", csv, "sugarcane_results.csv", "text/csv", use_container_width=True)
 
     if st.button("🗂️ Export GeoTIFF", use_container_width=True):
