@@ -336,6 +336,147 @@ def export_geotiff(geojson_data, field_code, year, image_type="classification"):
     return task
 
 
+def run_batch_all(geojson_data, field_codes, year, analyses):
+    """Batch GEE — groups parcels by planting date, one reduceRegions call per group."""
+    from collections import defaultdict
+
+    pd_col      = f"PD_{year.replace('-', '_')}"
+    ct_col      = f"CT_{year.replace('-', '_')}"
+    props_map   = {f["properties"]["FIELD_CODE"]: f["properties"] for f in geojson_data["features"]}
+    feat_lookup = {f["properties"]["FIELD_CODE"]: f for f in geojson_data["features"]}
+
+    date_groups = defaultdict(list)
+    results = {}
+
+    for fc in field_codes:
+        p       = props_map.get(fc, {})
+        raw_date = p.get(pd_col)
+        parsed  = parse_date(raw_date)
+        base = {
+            "FIELD_CODE": fc,
+            "AREA_RAI":   p.get("AREA_RAI"),
+            "CROP_TYPE":  p.get(ct_col),
+            "START_DATE": parsed.strftime("%Y-%m-%d") if parsed else raw_date,
+            "YEAR":       year,
+        }
+        results[fc] = base
+        if parsed is None:
+            base["STATUS"] = "ไม่มีวันปลูก"
+        else:
+            date_groups[parsed.strftime("%Y-%m-%d")].append(fc)
+
+    for start_str, codes in date_groups.items():
+        features = [feat_lookup[c] for c in codes if c in feat_lookup]
+        sub_fc   = ee.FeatureCollection(features)
+
+        # Fetch S2 once per date group if any band analysis needed
+        s2, img_count = None, 0
+        if any(a in analyses for a in ["savi", "ndre", "growth"]):
+            s2        = get_s2(sub_fc, start_str)
+            img_count = s2.size().getInfo()
+
+        # ── SAVI / NDWI / NDRE ──
+        if "savi" in analyses or "ndre" in analyses:
+            if img_count == 0:
+                for c in codes:
+                    results[c].update({"img_count": 0, "STATUS": "ไม่มีภาพดาวเทียม"})
+            else:
+                median    = s2.median()
+                stats_img = ee.Image.cat([
+                    median.select("SAVI").gte(0.35).rename("Good_Pct"),
+                    median.select("SAVI").lt(0.25).rename("Poor_Pct"),
+                    median.select("NDWI").lt(-0.1).rename("Dry_Pct"),
+                    median.select(["SAVI", "NDWI", "NDRE"]),
+                ])
+                reduced = stats_img.reduceRegions(
+                    collection=sub_fc,
+                    reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
+                    scale=10,
+                ).getInfo()
+                for feat in reduced["features"]:
+                    rp  = feat["properties"]
+                    fc  = rp.get("FIELD_CODE")
+                    if fc not in results:
+                        continue
+                    savi_mean = rp.get("SAVI_mean") or 0
+                    good_pct  = (rp.get("Good_Pct_mean") or 0) * 100
+                    poor_pct  = (rp.get("Poor_Pct_mean") or 0) * 100
+                    dry_pct   = (rp.get("Dry_Pct_mean") or 0) * 100
+                    if good_pct >= 70:   status = "🟢 งอกดี"
+                    elif good_pct >= 40: status = "🟡 ปานกลาง"
+                    elif poor_pct >= 50: status = "🔴 ไม่งอก"
+                    else:                status = "🟠 น้อย"
+                    results[fc].update({
+                        "img_count": img_count,
+                        "SAVI_mean": round(savi_mean, 4),
+                        "SAVI_sd":   round(rp.get("SAVI_stdDev") or 0, 4),
+                        "NDWI_mean": round(rp.get("NDWI_mean") or 0, 4),
+                        "NDRE_mean": round(rp.get("NDRE_mean") or 0, 4),
+                        "Good_pct":  round(good_pct, 1),
+                        "Poor_pct":  round(poor_pct, 1),
+                        "Dry_pct":   round(dry_pct, 1),
+                        "STATUS":    status,
+                    })
+
+        # ── Growth Speed ──
+        if "growth" in analyses and img_count > 0:
+            _start = start_str  # capture for closure
+
+            def add_time(img):
+                d = ee.Date(img.get("system:time_start")).difference(ee.Date(_start), "day")
+                return img.addBands(ee.Image.constant(d).rename("Time").float())
+
+            growth_img = (
+                s2.map(add_time).select(["Time", "SAVI"])
+                .reduce(ee.Reducer.linearFit()).select("scale")
+            )
+            growth_reduced = growth_img.reduceRegions(
+                collection=sub_fc,
+                reducer=ee.Reducer.mean(),
+                scale=10,
+            ).getInfo()
+            for feat in growth_reduced["features"]:
+                rp = feat["properties"]
+                fc = rp.get("FIELD_CODE")
+                if fc in results:
+                    speed = rp.get("mean")
+                    results[fc]["GrowthSpeed"] = round(speed, 6) if speed else None
+
+        # ── Delta NDVI (3 time windows — keep per-parcel) ──
+        if "delta_ndvi" in analyses:
+            for c in codes:
+                results[c].update(run_delta_ndvi(sub_fc, c, start_str))
+
+        # ── CHIRPS (12 weeks, reduceRegions across all parcels per week) ──
+        if "chirps" in analyses:
+            start_dt   = datetime.strptime(start_str, "%Y-%m-%d")
+            weeks      = [(w+1, start_dt + timedelta(days=w*7),
+                           start_dt + timedelta(days=(w+1)*7)) for w in range(12)]
+            chirps_data = {c: [] for c in codes}
+            for wk, ws, we in weeks:
+                rain_img = (
+                    ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+                    .filterDate(ws.strftime("%Y-%m-%d"), we.strftime("%Y-%m-%d"))
+                    .filterBounds(sub_fc)
+                    .select("precipitation").sum()
+                )
+                rain_reduced = rain_img.reduceRegions(
+                    collection=sub_fc,
+                    reducer=ee.Reducer.mean(),
+                    scale=5566,
+                ).getInfo()
+                for feat in rain_reduced["features"]:
+                    rp = feat["properties"]
+                    fc = rp.get("FIELD_CODE")
+                    if fc in chirps_data:
+                        rain = rp.get("mean")
+                        chirps_data[fc].append({"Week": f"W{wk:02d}", "CHIRPS_mm": round(rain, 2) if rain else None})
+            for c in codes:
+                results[c]["chirps_weekly"] = chirps_data[c]
+
+    return results
+
+
 def run_year_compare(geojson_data, field_code, years=None):
     """Compare SAVI across years for one parcel"""
     if years is None:

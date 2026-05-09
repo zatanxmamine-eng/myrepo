@@ -4,7 +4,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import shape
-from gee_utils import run_all
+from gee_utils import run_batch_all
 
 RESULT_TABS = [
     "🗺️ แผนที่รวม", "🌱 SAVI/NDWI", "🚀 Growth Speed",
@@ -15,24 +15,23 @@ RESULT_TABS = [
 
 
 def run_analysis(geojson_data):
-    """Run GEE for all selected parcels, show progress"""
-    fields = st.session_state.selected_fields
-    year = st.session_state.target_year
+    """Run GEE batch analysis for all selected parcels."""
+    fields   = st.session_state.selected_fields
+    year     = st.session_state.target_year
     analyses = st.session_state.analyses
 
-    results = {}
-    progress = st.progress(0, text="กำลังวิเคราะห์...")
+    progress   = st.progress(0, text="กำลังส่งข้อมูลไป GEE...")
     status_box = st.empty()
+    status_box.info(f"🛰 ส่ง {len(fields)} แปลงไป GEE พร้อมกัน (batch mode)...")
 
-    for i, field_code in enumerate(fields):
-        status_box.info(f"🛰 กำลังวิเคราะห์แปลง {field_code} ({i+1}/{len(fields)})")
-        try:
-            results[field_code] = run_all(geojson_data, field_code, year, analyses)
-        except Exception as e:
-            results[field_code] = {"FIELD_CODE": field_code, "STATUS": f"Error: {e}"}
-        progress.progress((i + 1) / len(fields), text=f"เสร็จ {i+1}/{len(fields)}")
+    try:
+        results = run_batch_all(geojson_data, fields, year, analyses)
+        progress.progress(1.0, text="เสร็จแล้ว")
+        status_box.success(f"✅ วิเคราะห์เสร็จ {len(results)} แปลง")
+    except Exception as e:
+        status_box.error(f"❌ Error: {e}")
+        results = {fc: {"FIELD_CODE": fc, "STATUS": f"Error: {e}"} for fc in fields}
 
-    status_box.success(f"✅ วิเคราะห์เสร็จ {len(results)} แปลง")
     return results
 
 
