@@ -84,8 +84,25 @@ def calc_indices(image):
     return image.addBands([savi, ndwi, ndre])
 
 
+_DATE_FORMATS = ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d", "%d-%m-%Y"]
+
+def parse_date(value):
+    """Try multiple date formats, return datetime or None"""
+    if not value or str(value).strip().lower() in ("", "none", "n/a", "na", "0", "-"):
+        return None
+    s = str(value).strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def get_s2(parcel_ee, start_str, days=90, cloud_pct=30):
-    start = datetime.strptime(start_str, "%Y-%m-%d")
+    start = parse_date(start_str)
+    if start is None:
+        raise ValueError(f"parse_date ไม่รู้จักรูปแบบวันที่: {start_str!r}")
     end = start + timedelta(days=days)
     return (
         ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
@@ -214,17 +231,19 @@ def run_all(geojson_data, field_code, year, analyses):
     ct_col = f"CT_{year.replace('-', '_')}"
     props_map = {f["properties"]["FIELD_CODE"]: f["properties"] for f in geojson_data["features"]}
     p = props_map.get(field_code, {})
-    start_str = p.get(pd_col)
+    raw_date = p.get(pd_col)
+    parsed   = parse_date(raw_date)
+    start_str = parsed.strftime("%Y-%m-%d") if parsed else None
 
     result = {
         "FIELD_CODE": field_code,
         "AREA_RAI":   p.get("AREA_RAI"),
         "CROP_TYPE":  p.get(ct_col),
-        "START_DATE": start_str,
+        "START_DATE": start_str or raw_date,
         "YEAR":       year,
     }
 
-    if not start_str:
+    if start_str is None:
         result["STATUS"] = "ไม่มีวันปลูก"
         return result
 
