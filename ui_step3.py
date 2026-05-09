@@ -27,46 +27,56 @@ def _fmt_time(sec):
 
 
 def run_analysis(geojson_data):
-    """Run GEE batch analysis grouped by planting date, with per-group progress."""
-    import time
+    """Run GEE batch analysis. Progress bar ticks every est/10 sec via background thread."""
+    import time, threading
+
     fields   = st.session_state.selected_fields
     year     = st.session_state.target_year
     analyses = st.session_state.analyses
 
     date_groups, no_date, props_map, feat_lookup = build_date_groups(geojson_data, fields, year)
-    n_groups = len(date_groups)
-    est      = _estimate_sec(len(fields), analyses)
+    est = _estimate_sec(len(fields), analyses)
 
+    progress   = st.progress(0.0)
     status_box = st.empty()
-    progress   = st.progress(0)
-    status_box.info(f"🛰 {len(fields)} แปลง · {n_groups} กลุ่มวันปลูก · ประมาณ {_fmt_time(est)}")
+    status_box.info(
+        f"🛰 {len(fields)} แปลง · {len(date_groups)} กลุ่มวันปลูก · "
+        f"ประมาณ {_fmt_time(est)}"
+    )
 
     ct_col  = f"CT_{year.replace('-', '_')}"
     results = {}
-
     for fc in no_date:
         p = props_map.get(fc, {})
         results[fc] = {"FIELD_CODE": fc, "AREA_RAI": p.get("AREA_RAI"),
                        "CROP_TYPE": p.get(ct_col), "START_DATE": None,
                        "YEAR": year, "STATUS": "ไม่มีวันปลูก"}
 
-    t0 = time.time()
-    for i, (start_str, codes) in enumerate(date_groups.items()):
-        elapsed = time.time() - t0
-        remaining = max(0, est - elapsed)
-        status_box.info(
-            f"🛰 กลุ่มที่ {i+1}/{n_groups} · "
-            f"ผ่านมา {_fmt_time(elapsed)} · "
-            f"เหลือประมาณ {_fmt_time(remaining)}"
-        )
-        try:
-            results.update(run_group(feat_lookup, props_map, codes, start_str, year, analyses))
-        except Exception as e:
-            for fc in codes:
-                results[fc] = {"FIELD_CODE": fc, "STATUS": f"Error: {e}"}
-        progress.progress((i + 1) / n_groups)
+    done   = threading.Event()
+    t0     = time.time()
+    interval = est / 10  # tick every 10% of estimated time
+
+    def _tick():
+        while not done.is_set():
+            done.wait(timeout=interval)
+            if not done.is_set():
+                elapsed = time.time() - t0
+                progress.progress(min(0.95, elapsed / est))
+
+    threading.Thread(target=_tick, daemon=True).start()
+
+    try:
+        for start_str, codes in date_groups.items():
+            try:
+                results.update(run_group(feat_lookup, props_map, codes, start_str, year, analyses))
+            except Exception as e:
+                for fc in codes:
+                    results[fc] = {"FIELD_CODE": fc, "STATUS": f"Error: {e}"}
+    finally:
+        done.set()
 
     elapsed = time.time() - t0
+    progress.progress(1.0)
     status_box.success(f"✅ เสร็จ {len(results)} แปลง · ใช้เวลา {_fmt_time(elapsed)}")
     return results
 
